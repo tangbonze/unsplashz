@@ -4,7 +4,7 @@
 -- 备注：上游 source.unsplash.com 已于 2024 年中下线，本地版已改为
 --       Unsplash 官方 API → picsum → Bing 三级自动回退，无需配置即可用。
 --       快捷键：⌃⌥W 立即换一张
---       独立 pcall 保护：不因本段异常影响下方 WordWand 初始化
+--       独立 pcall 保护：本段异常不会影响 init.lua 里其他配置
 -- ==========================================================================
 do
   local ok, err = pcall(function()
