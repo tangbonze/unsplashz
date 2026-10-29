@@ -21,8 +21,8 @@ Random landscape wallpapers for [Hammerspoon](https://www.hammerspoon.org/): pic
 ## Install
 
 ```bash
-git clone https://github.com/tangbonze/hammerspoon-unsplashz.git
-cd hammerspoon-unsplashz
+git clone https://github.com/tangbonze/unsplashz.git
+cd unsplashz
 ./install.sh
 ```
 
