@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+._*
+
+# 运行时产物，不该进仓库
+wallpapers/
+secrets/
+*.log
+unsplashz_prefs.json
+*.bak
+
+# 编辑器
+.idea/
+.vscode/

@@ -1,0 +1,268 @@
+-- ==========================================================================
+-- UnsplashZ · 随机风景壁纸（每 3 小时自动换一张）
+--
+-- 备注：上游 source.unsplash.com 已于 2024 年中下线，本地版已改为
+--       Unsplash 官方 API → picsum → Bing 三级自动回退，无需配置即可用。
+--       快捷键：⌃⌥W 立即换一张
+--       独立 pcall 保护：不因本段异常影响下方 WordWand 初始化
+-- ==========================================================================
+do
+  local ok, err = pcall(function()
+    -- 注意：hs.loadSpoon 只返回模块，不会自动创建全局变量，
+    --       必须用返回值持有，不能直接写 UnsplashZ:init()
+    -- 用 require 而不是 hs.loadSpoon：确保拿到的是同一个模块实例
+    -- （hs.loadSpoon 每次调用会重新 require，返回的 table 与模块内部 obj 可能不是同一实例）
+    local spoon = require("UnsplashZ")
+    if spoon then
+      -- require 不会自动调用 init()，需显式调用（且只调一次）
+      -- 用 getObj() 取模块内部真实实例，避免副本导致状态不同步
+      local real = (spoon.getObj and spoon.getObj()) or spoon
+      if not real.__inited then
+        real.__inited = true
+        real:init()
+      end
+      spoon = real
+      -- 注意：hs.loadSpoon 内部已自动调用过 spoon:init()，此处不要重复调用，
+      --       否则会创建两套定时器。只需绑定热键。
+      -- 用 hs.hotkey.new + 显式 enable()，比 hs.hotkey.bind 更可控
+      local function notify(msg)
+        -- 注意：本版本 hs.notify 没有 :inform() 方法（只有 :informativeText()），
+        -- 旧写法会抛 "attempt to call a nil value"，直接中断后面的换图逻辑。
+        -- 再加 pcall，确保通知失败也不会影响壁纸更换。
+        pcall(function()
+          hs.notify.new():title("UnsplashZ"):informativeText(msg):send()
+        end)
+      end
+      local function onTrigger()
+        -- 按下立刻给反馈（下载需 10~30 秒，避免误以为没反应）
+        notify("正在下载新壁纸…")
+        -- 先写日志再动作，便于确认热键确实被触发
+        local lf = io.open(os.getenv("HOME") .. "/.hammerspoon/unsplashz.log", "a")
+        if lf then
+          lf:write(string.format("[%s] 热键触发 → 手动换图\n", os.date("%Y-%m-%d %H:%M:%S")))
+          lf:close()
+        end
+        spoon:next({notify = true})
+      end
+      -- 只保留一组热键：⌃⌥W
+      -- 想换组合只改下面这行（例如 {"ctrl","shift","alt"}, "F5"）
+      local HK_MODS, HK_KEY = { "ctrl", "alt" }, "W"
+      local hk = hs.hotkey.bind(HK_MODS, HK_KEY, onTrigger)
+      -- 记录绑定结果到日志，便于确认
+      local fb = io.open(os.getenv("HOME") .. "/.hammerspoon/unsplashz.log", "a")
+      if fb then
+        fb:write(string.format("[%s] %s %s\n",
+          os.date("%Y-%m-%d %H:%M:%S"),
+          hk and "已绑定热键" or "热键绑定失败:",
+          table.concat(HK_MODS, "+") .. "+" .. HK_KEY))
+        fb:close()
+      end
+      -- 菜单栏入口：右键菜单里点「换一张壁纸」，不依赖键盘监听是否可用
+      if hs.menubar and hs.menubar.new then
+        local mb = hs.menubar.new()
+        -- 图标用 macOS 原生 SF Symbols 渲染的模板图（黑 + 透明通道）
+        -- template = true → 菜单栏深/浅色下自动反色，与系统图标风格一致
+        local iconPath = os.getenv("HOME") .. "/.hammerspoon/icons/unsplashz.png"
+        local iconSet = false
+        if hs.image and hs.image.imageFromPath and hs.fs.attributes(iconPath) then
+          local okI, img = pcall(hs.image.imageFromPath, iconPath)
+          if okI and img then
+            pcall(function() img:setSize({w = 18, h = 18}) end)
+            iconSet = pcall(function() mb:setIcon(img, true) end)
+          end
+        end
+        if not iconSet then
+          mb:setTitle("🖼")  -- 兜底：图标文件缺失时退回 emoji
+        end
+        mb:setTooltip("UnsplashZ · 随机风景壁纸 · ⌃⌥W 换一张")
+        -- 清理频率的显示格式：天数一律取整，绝不出现 0.25 / 1.5 这类小数
+        -- 24 的整数倍 → "N 天"；其余 → "N 小时"（小时粒度更细，也避免小数天）
+        local function fmtEvery(hours, suffix)
+          local h = math.max(1, math.floor(tonumber(hours) or 24))
+          suffix = suffix or ""
+          if h % 24 == 0 then
+            return string.format("%d 天%s", h // 24, suffix)
+          end
+          return string.format("%d 小时%s", h, suffix)
+        end
+        -- 菜单可重建：切换分辨率后需要刷新勾选状态
+        local function buildMenu()
+          -- 分辨率子菜单：自动跟随屏幕 + 常见分辨率（1920 以上）
+          local resItems = {
+            {title = "自动（跟随屏幕）" .. (spoon.sizeMode == "auto" and "   ✓" or ""),
+             fn = function()
+               spoon:setSize("auto")
+               buildMenu()
+               notify("已切换为自动分辨率，正在按屏幕尺寸下载…")
+               spoon:next({notify = true})
+             end},
+            {title = "-"},
+          }          for _, r in ipairs(spoon.commonResolutions or {}) do
+            local w, h, label = r[1], r[2], r[3]
+            if spoon.sizeMode == "manual"
+               and spoon.manualWidth == w and spoon.manualHeight == h then
+              label = label .. "   ✓"
+            end
+            resItems[#resItems + 1] = {title = label, fn = function()
+              spoon:setSize("manual", w, h)
+              buildMenu()
+              notify(string.format("已切换为 %d×%d，正在下载…", w, h))
+              spoon:next({notify = true})
+            end}
+          end
+          -- 图源设置子菜单：逐个启停 + 重新加载 / 打开配置 / 查看规则 / 测试 / 重置
+          local srcItems = {}
+          local srcList = spoon:sourceList()
+          local activeCount = 0
+          for _, s in ipairs(srcList) do
+            if s.active then activeCount = activeCount + 1 end
+            local sname = s.name
+            srcItems[#srcItems + 1] = {
+              title = sname .. (s.active and "   ✓" or ""),
+              fn = function()
+                -- 点击 = 启用/禁用（状态存 prefs，不改用户的配置文件）
+                local isActive = false
+                for _, x in ipairs(spoon:sourceList()) do
+                  if x.name == sname then isActive = x.active end
+                end
+                spoon:setSourceEnabled(sname, not isActive)
+                buildMenu()
+                notify(string.format("图源 %s → %s", sname, isActive and "已禁用" or "已启用"))
+              end,
+            }
+          end
+          if #srcItems == 0 then
+            srcItems[#srcItems + 1] = {title = "（没有可用图源）", disabled = true}
+          end
+          srcItems[#srcItems + 1] = {title = "-"}
+          srcItems[#srcItems + 1] = {title = "重新加载图源配置", fn = function()
+            spoon:reloadSources()
+            buildMenu()
+            notify("图源配置已重新加载")
+          end}
+          srcItems[#srcItems + 1] = {title = "打开图源配置文件", fn = function()
+            hs.execute('open "' .. os.getenv("HOME") .. '/.hammerspoon/unsplashz_sources.json"')
+          end}
+          srcItems[#srcItems + 1] = {title = "查看图源设置规则", fn = function()
+            hs.execute('open -a TextEdit "' .. os.getenv("HOME") .. '/.hammerspoon/unsplashz_sources.md"')
+          end}
+          srcItems[#srcItems + 1] = {title = "测试所有图源", fn = function()
+            notify("正在测试图源…")
+            spoon:testSources(function(results)
+              local lines = {}
+              for _, r in ipairs(results or {}) do
+                lines[#lines + 1] = string.format("%s %s %s", r.name,
+                  r.ok and "✓" or "✗", tostring(r.err or ""))
+              end
+              notify(table.concat(lines, "\n"))
+            end)
+          end}
+          srcItems[#srcItems + 1] = {title = "重置为默认配置（会先备份）", fn = function()
+            spoon:resetSources()
+            buildMenu()
+            notify("图源配置已重置为默认")
+          end}
+          srcItems[#srcItems + 1] = {title = "-"}
+          srcItems[#srcItems + 1] = {
+            title = string.format("启用: %d/%d", activeCount, #srcList), disabled = true}
+
+          -- 壁纸清理子菜单：保留时长 + 执行间隔 + 立即清理
+          local cleanItems = {}
+          local retentions = {
+            {1, "每天清理（保留 1 天）"},
+            {3, "每 3 天清理（保留 3 天）"},
+            {7, "每周清理（保留 7 天）"},
+            {14, "每两周清理（保留 14 天）"},
+            {30, "每月清理（保留 30 天）"},
+            {90, "每季度清理（保留 90 天）"},
+          }
+          for _, r in ipairs(retentions) do
+            local days, label = r[1], r[2]
+            if spoon.autoCleanup and spoon.retentionDays == days then
+              label = label .. "   ✓"
+            end
+            cleanItems[#cleanItems + 1] = {title = label, fn = function()
+              spoon:setCleanup(days, nil, true)
+              buildMenu()
+              notify(string.format("清理策略已改为：保留 %d 天", days))
+            end}
+          end
+          cleanItems[#cleanItems + 1] = {title = "-"}
+          local intervalItems = {}
+          -- 6/12 小时保留小时粒度，其余全部是 24 的整数倍 → 天数必为整数
+          for _, h in ipairs({6, 12, 24, 48, 72, 168, 720}) do
+            local label = fmtEvery(h, "一次")
+            if spoon.autoCleanup and spoon.cleanupEveryHours == h then
+              label = label .. "   ✓"
+            end
+            intervalItems[#intervalItems + 1] = {title = label, fn = function()
+              spoon:setCleanup(nil, h, true)
+              buildMenu()
+              notify(string.format("清理频率已改为：每 %s执行", fmtEvery(h)))
+            end}
+          end
+          cleanItems[#cleanItems + 1] = {title = "检查频率", menu = intervalItems}
+          if spoon.autoCleanup then
+            cleanItems[#cleanItems + 1] = {title = "关闭自动清理", fn = function()
+              spoon:setCleanup(nil, nil, false)
+              buildMenu()
+              notify("已关闭自动清理")
+            end}
+          else
+            cleanItems[#cleanItems + 1] = {title = "启用自动清理", fn = function()
+              spoon:setCleanup(nil, nil, true)
+              buildMenu()
+              notify("已启用自动清理")
+            end}
+          end
+          cleanItems[#cleanItems + 1] = {title = "-"}
+          cleanItems[#cleanItems + 1] = {title = "立即清理一次", fn = function()
+            local n, bytes = spoon:cleanupNow()
+            buildMenu()
+            notify(string.format("清理完成：删除 %d 张，释放 %.1f MB",
+              n or 0, (bytes or 0) / 1024 / 1024))
+          end}
+          cleanItems[#cleanItems + 1] = {title = "-"}
+          local ccount, csize = spoon:cacheStats()
+          cleanItems[#cleanItems + 1] = {
+            title = string.format("当前: %s，保留 %d 天 / 每 %s执行",
+              spoon.autoCleanup and "已启用" or "已关闭",
+              spoon.retentionDays, fmtEvery(spoon.cleanupEveryHours)), disabled = true}
+          cleanItems[#cleanItems + 1] = {
+            title = string.format("壁纸目录: %d 张 / %.1f MB",
+              ccount or 0, (csize or 0) / 1024 / 1024), disabled = true}
+
+          local menuTable = {
+            {title = "立即换一张壁纸", fn = function()
+              notify("正在下载新壁纸…")
+              spoon:next({notify = true})
+            end},
+            {title = "分辨率", menu = resItems},
+            {title = "图源设置", menu = srcItems},
+            {title = "壁纸清理", menu = cleanItems},
+            {title = "-"},
+            {title = "打开壁纸目录", fn = function()
+              hs.execute('open "' .. os.getenv("HOME") .. '/.hammerspoon/wallpapers"')
+            end},
+            {title = "查看日志", fn = function()
+              hs.execute('open -a TextEdit "' .. os.getenv("HOME") .. '/.hammerspoon/unsplashz.log"')
+            end},
+            {title = "-"},
+            {title = "当前图源: " .. tostring(spoon.lastSource or "未知"), disabled = true},
+            {title = "当前分辨率: " .. tostring(spoon:sizeDescription()), disabled = true},
+          }
+          mb:setMenu(menuTable)
+          -- 暴露出来便于调试与自动化校验
+          _G.__UnsplashZMenuTable = menuTable
+        end
+        buildMenu()
+        _G.__UnsplashZMenu = mb
+        _G.__UnsplashZBuildMenu = buildMenu
+      end
+      print("UnsplashZ 已启动 · ⌃⌥W 或菜单栏🖼 换一张 · 每 3 小时自动更换")
+    else
+      print("UnsplashZ 加载失败")
+    end
+  end)
+  if not ok then print("UnsplashZ 初始化异常: " .. tostring(err)) end
+end

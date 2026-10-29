@@ -1,0 +1,29 @@
+{
+  "keyword": "nature",
+  "sources": [
+    {
+      "name": "Unsplash API",
+      "type": "json",
+      "url": "https://api.unsplash.com/photos/random?orientation=landscape&query={keyword}&w={w}",
+      "jsonPath": "urls.raw",
+      "urlSuffix": "&w={w}&h={h}&fit=crop&q=80",
+      "headers": { "Authorization": "Client-ID {key:unsplash}" },
+      "note": "Unsplash 官方 API，需 Access Key（写入 ~/.hammerspoon/secrets/unsplash.key）；未配置时自动跳过"
+    },
+    {
+      "name": "picsum",
+      "type": "direct",
+      "url": "https://picsum.photos/seed/{seed}/{w}/{h}",
+      "note": "Unsplash 授权图库，免 key，按请求尺寸中心裁切"
+    },
+    {
+      "name": "Bing",
+      "type": "json",
+      "url": "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=8",
+      "jsonPath": "images[].urlbase",
+      "urlPrefix": "https://www.bing.com",
+      "urlSuffix": "_UHD.jpg",
+      "note": "微软每日壁纸，8 张随机取一（固定 16:9，会自动居中裁切）"
+    }
+  ]
+}
